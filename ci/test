@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+
+# PLEASE DO NOT ADD NEW TEST CASES DIRECTLY TO THIS FILE.
+#
+# Instead, when adding a new test case, follow these steps:
+#
+# 1. Create a new folder under "ci/test_suites" with an appropriate name.
+#    Let's say you name it "my_new_test".
+# 2. Create an executable script "test" under that folder.  That is:
+#    "ci/test_suites/my_new_test/test".
+# 3. Add an entry to the SUBCOMMANDS section of the "help" function below,
+#    describing your new test.
+#
+# Your test is now ready, and can be executed in the "Jenkinsfile" like:
+#
+#     sh 'ci/test my_new_test'
+#
+# IMPORTANT NOTES:
+#
+# •  "test" is run from the "ci" folder.  So if your
+#    test uses helper scripts, you can source or execute them like:
+#    
+#        source "./test_suites/my_new_test/some_helper.sh" 
+#
+# •  If you are running a cucumber test, you'll want to source:
+#    
+#        source "./shared.sh" 
+#
+#    which defines a helper function "_run_cucumber_tests". See the
+#    function definition or existing "test_suites/**/test" files for example
+#    use.
+
+
+# TODO: Currently adding the -u and -o pipefail options breaks
+# this script.  We should fix these errors and turn them on.
+set -e
+
+# Note: Because this is called from the root.
+# shellcheck disable=SC1091
+source "./ci/shared.sh"
+# shellcheck disable=SC1091
+source "build_utils.sh"
+
+# Create default value if not set: allows compose to run in isolated namespace
+: "${COMPOSE_PROJECT_NAME:=$(openssl rand -hex 3)}"
+export COMPOSE_PROJECT_NAME
+
+help() {
+  cat << EOF
+NAME
+    test - CLI to simplify testing
+
+SYNOPSIS
+    test <subcommand>
+
+SUBCOMMANDS
+    api                    - Runs Cucumber API features
+    authenticators_azure   - Runs Cucumber Azure Authenticator features
+    authenticators_config  - Runs Cucumber Authenticator configuration features
+    authenticators_gcp     - Runs Cucumber GCP Authenticator features
+    authenticators_ldap    - Runs Cucumber LDAP Authenticator features
+    authenticators_oidc    - Runs Cucumber OIDC Authenticator features
+    authenticators_status  - Runs Cucumber Authenticator status features
+    policy                 - Runs Cucumber Policy features
+    rotators               - Runs Cucumber Rotator features
+    help                   - Show this message
+    rspec                  - Runs RSpec specs
+    rspec_audit            - Runs RSpecs for the Audit engine
+EOF
+}
+
+# NOTE: See linked to issue at top of file.  This code in particular is can be
+# simplified, and we need to figure out if we want it to run by default.
+docker_diagnostics() {
+  local test_suite="${1}"
+  local cont_names
+  local cont_log_dir
+
+  # Read the running containers names into an array.
+  #
+  # Note on bash trickiness: The backslash is required in \$NF because we want
+  # $NF to be passed literally to awk -- so awk can interpret it -- whereas we
+  # want the shell to interpret and expand ${COMPOSE_PROJECT_NAME}, so awk sees
+  # its _value_ in the regex.
+  #
+  # Docker Note: container name is always the last field.  Hence $NF gets it.
+  readarray -t cont_names < <(
+    docker ps --all | awk "/${COMPOSE_PROJECT_NAME}/{print \$NF}"
+  )
+
+  # Store container logs for archiving.
+  echo "Writing Container logs to" \
+    "container_logs/${test_suite}/container[-inspect].log"
+
+  cont_log_dir="$(git rev-parse --show-toplevel)/container_logs/${test_suite}"
+
+  mkdir -p "${cont_log_dir}"
+
+  for name in "${cont_names[@]}"; do
+    docker inspect "$name" > "${cont_log_dir}/${name}-inspect.log"
+    docker logs "$name" > "${cont_log_dir}/${name}.log"
+
+    # For the conjur container, we want the development.log too
+    if [[ "$name" =~ conjur ]]; then
+      docker cp "$name:/opt/conjur-server/log/development.log" \
+        "${cont_log_dir}/development.log"
+    fi
+  done
+}
+
+finish() {
+  local test_suite=$1
+
+  docker_diagnostics "${test_suite}"
+
+  # TODO: More reliable approach to this.
+  # Give SimpleCov time to generate reports.
+  sleep 15
+  docker-compose down --rmi 'local' --volumes || true
+}
+
+# main is always called with at least the first arg. When the 2nd arg, the
+# test suite, is omitted, it simply prints help.
+#
+# Args:
+# - test_dir: the directory of this script.
+# - test_suite: the test suite to run.
+main() {
+  local test_dir=$1   # This is "ci"
+  local test_suite=$2
+
+  # TODO: this is a hidden dep used in ci/docker-compose.yml
+  export TAG
+
+  # Print help if the test suite is omitted, or if explicitly specified.
+  if [[ -z "$test_suite" || "$test_suite" == 'help' ]]; then
+    help
+    exit 1
+  fi
+
+  if [[ -z "$KEEP_CONTAINERS" ]]; then
+    # Note: We want $test_suite to expand now, not when EXIT is trapped.
+    # shellcheck disable=SC2064
+    trap "finish $test_suite" EXIT
+  fi
+
+  # Create Conjur Image
+  # (On Jenkins, this will no-op because we have a build stage)
+  ./build.sh --jenkins >&2
+
+  TAG=$(version_tag)
+
+  # Change into the "ci" directory
+  cd "$test_dir"
+  "./test_suites/$test_suite/test"
+}
+
+main "$(dirname "$0")" "$@"

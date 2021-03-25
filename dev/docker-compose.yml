@@ -1,0 +1,149 @@
+version: "3"
+services:
+  pg:
+    image: postgres:10.14
+    environment:
+      # To avoid the following error:
+      #
+      #   Error: Database is uninitialized and superuser password is not
+      #   specified.  You must specify POSTGRES_PASSWORD for the superuser. Use
+      #   "-e POSTGRES_PASSWORD=password" to set it in "docker run".
+      #
+      #   You may also use POSTGRES_HOST_AUTH_METHOD=trust to allow all
+      #   connections without a password. This is *not* recommended. See
+      #   PostgreSQL documentation about "trust"
+      POSTGRES_HOST_AUTH_METHOD: trust
+
+  audit:
+    image: postgres:10.14
+    environment:
+      # See description on `pg` service for use of POSTGRES_HOST_AUTH_METHOD
+      POSTGRES_HOST_AUTH_METHOD: trust
+
+  testdb:
+    image: postgres:10.14
+    environment:
+      POSTGRES_PASSWORD: postgres_secret
+
+  conjur:
+    build:
+      context: ../
+      dockerfile: dev/Dockerfile.dev
+    image: conjur-dev
+    environment:
+      CONJUR_APPLIANCE_URL: http://localhost:3000
+      DATABASE_URL: postgres://postgres@pg/postgres
+      CONJUR_ADMIN_PASSWORD: ADmin123!!!!
+      CONJUR_ACCOUNT: cucumber
+      CONJUR_PASSWORD_ALICE: SEcret12!!!!
+      CONJUR_DATA_KEY:
+      RAILS_ENV:
+      CONJUR_LOG_LEVEL: debug
+      AUDIT_DATABASE_URL:
+      # TODO: Where should we be running rspec tests from, ideally?
+      # See https://github.com/DatabaseCleaner/database_cleaner#safeguards
+      DATABASE_CLEANER_ALLOW_REMOTE_DATABASE_URL: "true"
+      BUNDLE_GEMFILE: /src/conjur-server/Gemfile
+    ports:
+      - "3000:3000"
+      - "1234:1234"
+    expose:
+      - "3000"
+    volumes:
+    - ..:/src/conjur-server
+    - ../../conjur-policy-parser:/src/conjur-policy-parser
+    - authn-local:/run/authn-local
+    - ../ci/ldap-certs:/ldap-certs:ro
+    # TODO: authenticators_oidc/test has a dep on this
+    - ../ci/test_suites/authenticators_oidc/keycloak:/authn-oidc/keycloak/scripts
+    links:
+    - pg:pg
+    - ldap-server
+    - oidc-keycloak:keycloak
+
+  cucumber:
+    image: conjur-dev
+    entrypoint: sleep
+    command: infinity
+    environment:
+      LDAP_URI: ldap://ldap-server:389
+      LDAP_BASE: dc=conjur,dc=net
+      CONJUR_APPLIANCE_URL: http://conjur:3000
+      DATABASE_URL: postgres://postgres@pg/postgres
+      CONJUR_ADMIN_PASSWORD: ADmin123!!!!
+      CONJUR_DATA_KEY:
+      RAILS_ENV:
+    volumes:
+      - ..:/src/conjur-server
+      - authn-local:/run/authn-local
+      - ../ci/ldap-certs:/ldap-certs:ro
+    links:
+      - conjur
+      - pg
+      - testdb
+
+  client:
+    image: cyberark/conjur-cli:5
+    entrypoint: sleep
+    command: infinity
+    environment:
+      CONJUR_APPLIANCE_URL: http://conjur:3000
+      CONJUR_ACCOUNT: cucumber
+      CONJUR_AUTHN_LOGIN: admin
+    links:
+    - conjur:conjur
+    volumes:
+    - ..:/src/conjur-server
+
+  ldap-server:
+    image: osixia/openldap
+    command: --copy-service --loglevel debug
+    hostname: ldap-server
+    environment:
+      LDAP_ORGANISATION: CyberArk
+      LDAP_DOMAIN: conjur.net
+      LDAP_ADMIN_PASSWORD: ldapsecret
+      LDAP_TLS_CA_CRT_FILENAME: "ca-chain.cert.pem"
+      LDAP_TLS_CRT_FILENAME: "ldap-server.cert.pem"
+      LDAP_TLS_KEY_FILENAME: "ldap-server.key.pem"
+      LDAP_TLS_VERIFY_CLIENT: try
+
+    volumes:
+      - ./files/authn-ldap/ldap:/container/service/slapd/assets/config/bootstrap/ldif/custom
+      - ../ci/ldap-certs:/container/service/slapd/assets/certs:ro
+
+  oidc-keycloak:
+    image: jboss/keycloak:4.3.0.Final
+    environment:
+      - KEYCLOAK_USER=admin
+      - KEYCLOAK_PASSWORD=admin
+      - KEYCLOAK_APP_USER=alice
+      - KEYCLOAK_APP_USER_PASSWORD=alice
+      - KEYCLOAK_APP_USER_EMAIL=alice@conjur.net
+      - KEYCLOAK_SECOND_APP_USER=bob
+      - KEYCLOAK_SECOND_APP_USER_PASSWORD=bob
+      - KEYCLOAK_SECOND_APP_USER_EMAIL=bob@conjur.net
+      - KEYCLOAK_NON_CONJUR_APP_USER=not_in_conjur
+      - KEYCLOAK_NON_CONJUR_APP_USER_PASSWORD=not_in_conjur
+      - KEYCLOAK_NON_CONJUR_APP_USER_EMAIL=not_in_conjur
+      - DB_VENDOR=H2
+      - KEYCLOAK_CLIENT_ID=conjurClient
+      - KEYCLOAK_REDIRECT_URI=http://locallhost.com/
+      - KEYCLOAK_CLIENT_SECRET=1234
+      - KEYCLOAK_SCOPE=openid
+    ports:
+      - "7777:8080"
+    volumes:
+      # TODO: authenticators_oidc/test has a dep on this
+      - ../ci/test_suites/authenticators_oidc/keycloak:/scripts
+      - ../ci/test_suites/authenticators_oidc/keycloak/standalone.xml:/opt/jboss/keycloak/standalone/configuration/standalone.xml
+
+  okta-ldap-agent:
+    image: weareenvoy/okta-ldap-agent
+    volumes:
+      - ./files/okta-ldap-agent/conf:/opt/Okta/OktaLDAPAgent/conf
+    entrypoint: sleep
+    command: infinity
+
+volumes:
+  authn-local:

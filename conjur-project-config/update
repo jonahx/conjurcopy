@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+
+# IMPORTANT: This script must be called from the root of parent repo (ie, the
+# repo in which this repo lives as git submodule).
+
+main() {
+  # One time validation.
+  #
+  # Validate that already-released actions don't exist in other workflow files.
+  # If they do, the repo running this 'update' script is running it for the
+  # first time.  To be safe, we force the developer to manually edit or remove
+  # the existing files to avoid duplicating the actions.
+  valid=true
+  while read -rd $'\0' file; do
+    for action in enforce-rebase enforce-commit-style; do
+      if grep --quiet "$action" "$file"; then
+        please_remove_gh_action "$action" "$file"
+        valid=false
+      fi
+    done
+  done < <(find .github/workflows -type f -not -name git_rules.yml -print0)
+
+  if [ $valid = 'false' ]; then
+    exit 1
+  fi
+
+  echo "Add or update Rubocop and CodeClimate settings files."
+
+  cp conjur-project-config/files/.codeclimate.yml .
+  cp conjur-project-config/files/.rubocop.yml .
+  cp conjur-project-config/files/.rubocop_settings.yml .
+
+  if ! [ -f .rubocop_todo.yml ]; then
+    echo "Add blank .rubocop_todo, since none exists."
+    cp conjur-project-config/files/.rubocop_todo.yml .
+  fi
+
+  echo "Add or update common Github workflow files."
+
+  cp conjur-project-config/files/workflows/* ./.github/workflows
+
+  echo "Done.  Update successful."
+  echo ""
+  echo "Run 'git status' to see if what changed, if anything."
+}
+
+# Helper functions
+
+please_remove_gh_action() {
+  local action=$1
+  local file=$2
+
+  cat <<EOS
+The '$action' Github action already exists in the file:
+
+    $file
+
+Please manually edit or delete the file to remove the action.
+Then, re-run this script.
+The action will be added back using a dedicated workflow file.
+
+EOS
+}
+
+main

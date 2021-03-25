@@ -1,0 +1,10 @@
+plugins:
+  rubocop:
+    enabled: true
+    channel: rubocop-1-8-1
+  reek:
+    enabled: true
+  bundler-audit:
+    enabled: true
+  brakeman:
+    enabled: true

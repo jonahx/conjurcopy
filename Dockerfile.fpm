@@ -1,0 +1,29 @@
+# Build from the same version of ubuntu as phusion/baseimage
+FROM @@image@@
+
+RUN apt-get update -y && \
+    apt-get install -y zlib1g-dev \
+                       liblzma-dev
+
+ENV BUNDLER_VERSION 2.1.4
+RUN gem install --no-rdoc --no-ri bundler:$BUNDLER_VERSION fpm
+
+RUN mkdir -p /src/opt/conjur/project
+
+WORKDIR /src/opt/conjur/project
+
+COPY Gemfile \
+     Gemfile.lock ./
+COPY gems/ gems/
+
+
+RUN bundle config --local deployment true && \
+    bundle config --local path vendor/bundle && \
+    bundle
+RUN mkdir -p .bundle
+RUN cp /usr/local/bundle/config .bundle/config
+
+COPY . .
+ADD debify.sh /
+
+WORKDIR /src
